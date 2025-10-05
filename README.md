@@ -50,6 +50,54 @@ Notes:
 - If embeddings/FAISS cannot be constructed or LangChain is not available, a TF-IDF fallback is used (no keys required) and the pipeline will log "Using TF-IDF fallback vector store".
 - The notebook in `notebooks/multi_page_rag_notebook.ipynb` contains a runnable demo that follows the same logic.
 
+Approach and rationale
+----------------------
+This repository implements a robust, multi-backend RAG pipeline so it can run in a wide variety of environments:
+
+- Primary: OpenAI embeddings + FAISS (best quality; requires `OPENAI_API_KEY`).
+- Optional local LLM: Ollama (fast, runs locally) — can be forced with `FORCE_OLLAMA=1` or autodetected if reachable.
+- Secondary: HuggingFace sentence-transformers when LangChain is present but no OpenAI key is configured.
+- Fallback: TF-IDF (scikit-learn) vector store used when embeddings/FAISS or LangChain are not available.
+
+Why this fallback chain?
+- Portability: developers should be able to run experiments locally without API keys or heavy models.
+- Cost and reliability: OpenAI delivers high-quality results but requires keys and may hit rate limits; Ollama lets teams run instruction-tuned models locally and is a cheap/repeatable option.
+- Predictability: TF-IDF provides a deterministic, offline fallback so the ingestion/search pieces can still be validated in CI or constrained environments.
+
+How the pipeline chooses a backend (high level)
+- If `FORCE_OLLAMA=1` the system will try Ollama embeddings/LLM first.
+- Else, if `OPENAI_API_KEY` is set and OpenAI calls succeed, the pipeline prefers OpenAI.
+- If OpenAI isn't available or fails, the pipeline will try a local Ollama instance (if reachable) and then HuggingFaceHub.
+- If those all fail, the pipeline falls back to TF-IDF.
+
+Logging & observability
+- The CLI and pipeline log the backend decisions and warnings; watch console output for lines like:
+   - "Using OpenAI embeddings via FAISS." (OpenAI chosen)
+   - "Using Ollama (mistral:instruct)." (Ollama chosen)
+   - "Falling back to TF-IDF vector store." (fallback)
+
+Running with Ollama (example)
+```powershell
+# set environment to prefer Ollama
+$env:FORCE_OLLAMA = '1'
+$env:OLLAMA_URL = 'http://localhost:11434'
+# optionally if your Ollama requires a token
+$env:OLLAMA_TOKEN = 'my-token'
+python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing
+```
+
+Developer testing tips (suggested test cases)
+- Unit: `tests/test_chunking.py` ensures chunking behavior.
+- Backend detection: set `FORCE_OLLAMA=1` or `OPENAI_API_KEY` in test env and assert `detect_backend()` reports expected backend.
+- Retrieval fallback: run the pipeline with only scikit-learn available and assert the QA fallback returns deterministic concatenated chunks when asked a query.
+- Integration: run the demo end-to-end locally with small pages and validate that `askers` return answers with `sources` metadata.
+
+Run the tests (after installing pytest):
+```powershell
+pip install pytest
+pytest -q
+```
+
 ## Backends
 - **OpenAI**: export `OPENAI_API_KEY` before running to enable.
 - **HuggingFace**: no key required; works with free local models.
