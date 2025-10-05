@@ -187,3 +187,47 @@ def test_batch_qa(monkeypatch):
     j = r2.json()
     assert j["count"] == 2
     assert len(j["results"]) == 2
+
+#####################################################################
+
+import types
+import pytest
+from src import rag_pipeline as rp
+def stub_fetch_html(url):
+    return "<html><h1 id='firstHeading'>Test Page</h1><div id='mw-content-text'><p>This is a test page content about qubits and QNN.</p></div></html>"
+
+@pytest.fixture(autouse=True)
+def patch_fetch(monkeypatch):
+    monkeypatch.setattr(rp, "fetch_html", lambda url: stub_fetch_html(url))
+    yield
+
+def test_build_from_urls_fallback_docs_created(monkeypatch):
+    # simulate no langchain available
+    original_doc = getattr(rp, "Document", None)
+    original_has_lang = getattr(rp, "HAS_LANGCHAIN", True)
+    rp.Document = None
+    rp.HAS_LANGCHAIN = False
+    try:
+        docs, store = rp.build_from_urls(["https://example.test/page"], seed=1)
+        assert isinstance(docs, list)
+        assert len(docs) > 0
+        # docs should have page_content attribute (fallback simple doc)
+        assert hasattr(docs[0], "page_content")
+        assert hasattr(docs[0], "metadata")
+    finally:
+        rp.Document = original_doc
+        rp.HAS_LANGCHAIN = original_has_lang
+
+def test_build_vectorstore_tfidf_fallback(monkeypatch):
+    # Ensure TF-IDF returned when no langchain env/backends available
+    original_has_lang = getattr(rp, "HAS_LANGCHAIN", True)
+    rp.HAS_LANGCHAIN = False
+    try:
+        docs = [types.SimpleNamespace(page_content="one two three", metadata={"source":"u"})]
+        store, stype = rp.build_vectorstore(docs, backend="auto")
+        assert stype == "tfidf"
+        assert hasattr(store, "search")
+        hits = store.search("one", k=1)
+        assert len(hits) == 1
+    finally:
+        rp.HAS_LANGCHAIN = original_has_lang

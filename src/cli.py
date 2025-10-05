@@ -16,6 +16,7 @@ import argparse
 import logging
 from langchain.docstore.document import Document
 from .rag_pipeline import (
+    build_from_urls,
     fetch_html,
     clean_wikipedia_html,
     chunk_text,
@@ -27,25 +28,6 @@ from .config import CONFIG
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-
-
-def build_from_urls(urls, seed=None, backend="auto"):
-    """Fetch, clean, chunk, and embed multiple URLs."""
-    docs = []
-    for url in urls:
-        logger.info(f"Fetching {url}")
-        html = fetch_html(url)
-        text = clean_wikipedia_html(html)
-        chunks = chunk_text(text, seed=seed)
-        for i, c in enumerate(chunks):
-            meta = {"source": url, "chunk_index": i}
-            docs.append(Document(page_content=c, metadata=meta))
-        logger.info("Created %d chunks for %s", len(chunks), url.split("/")[-1])
-
-    store, stype = build_vectorstore(docs, backend=backend)
-    logger.info("Built vector store: %s", stype)
-    return docs, store, stype
-
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-page RAG pipeline CLI")
