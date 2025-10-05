@@ -8,3 +8,5 @@ numpy
 pytest
 sentence-transformers
 transformers
+fastapi
+uvicorn[standard]

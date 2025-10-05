@@ -21,6 +21,7 @@ from .rag_pipeline import (
     make_page_specific_askers,
     detect_backend,
 )
+from .config import CONFIG
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -71,11 +72,35 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434', help='Ollama base URL')
     parser.add_argument('--ollama-token', type=str, default=None, help='Ollama API token (if required)')
-    parser.add_argument('--backend', type=str, default='auto', choices=['auto','openai','ollama','huggingface','tfidf'], help='Select embedding/LLM backend')
+    parser.add_argument('--emb-backend', type=str, default='auto', choices=['auto','openai','ollama','huggingface','tfidf'], help='Select embedding backend (vector store)')
+    parser.add_argument('--llm-backend', type=str, default='auto', choices=['auto','openai','ollama','huggingface','tfidf'], help='Select LLM backend for RetrievalQA')
+    parser.add_argument('--show-config', action='store_true', help='Pretty-print resolved configuration and exit')
     args = parser.parse_args()
 
+    # Show resolved configuration at startup to help diagnose backend selection
+    try:
+        if args.show_config:
+            try:
+                import yaml
+                print(yaml.safe_dump(CONFIG.__dict__, sort_keys=False))
+            except Exception:
+                print(CONFIG)
+            return
+        logger.info("Resolved CONFIG: %s", CONFIG)
+    except Exception:
+        # best-effort, don't fail the CLI if config printing fails
+        logger.info("Resolved CONFIG: <unavailable>")
+
     docs, store = build_from_urls(args.urls, seed=args.seed)
-    qa, qatype, llm = build_retrieval_qa(store, ollama_url=args.ollama_url, ollama_token=args.ollama_token, backend=args.backend)
+    # Resolve effective backends: precedence CLI flag -> config value -> 'auto'
+    emb_backend = args.emb_backend if args.emb_backend != 'auto' else (CONFIG.emb_backend or CONFIG.default_backend or 'auto')
+    llm_backend = args.llm_backend if args.llm_backend != 'auto' else (CONFIG.llm_backend or CONFIG.default_backend or 'auto')
+
+    if emb_backend and emb_backend != 'auto':
+        store, stype = build_vectorstore(docs, backend=emb_backend)
+        logger.info("Rebuilt vector store with emb-backend=%s: %s", emb_backend, stype)
+
+    qa, qatype, llm = build_retrieval_qa(store, ollama_url=args.ollama_url, ollama_token=args.ollama_token, backend=llm_backend)
 
     print("QA type:", qatype)
 

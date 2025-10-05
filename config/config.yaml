@@ -1,0 +1,16 @@
+# Sample configuration for the multi-page RAG pipeline
+# Supported keys:
+# default_backend: auto | openai | ollama | huggingface | tfidf
+# force_ollama: true/false (if true, Ollama will be tried first in auto mode)
+# ollama_url: URL for local Ollama instance
+# ollama_token: optional Ollama API token
+# openai_api_key: optional OpenAI API key (env is preferred)
+
+default_backend: auto
+force_ollama: false
+ollama_url: http://localhost:11434
+ollama_token: ''
+openai_api_key: ''
+huggingfacehub_api_token: ''
+emb_backend: auto
+llm_backend: auto

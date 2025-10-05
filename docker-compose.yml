@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+  app:
+    build: .
+    volumes:
+      - ./:/app
+    environment:
+      - RAG_DEFAULT_BACKEND=auto
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"
+  ollama:
+    image: "ollama/ollama:latest"
+    # Ollama may need platform-specific setup; this is a placeholder.
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_API_KEY=

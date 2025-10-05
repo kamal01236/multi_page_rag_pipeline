@@ -5,7 +5,7 @@ from src.rag_pipeline import detect_backend, SimpleFallbackVectorStore, build_re
 def test_detect_backend_value():
     """detect_backend should return one of the known strings."""
     val = detect_backend()
-    assert val in {"faiss-openai", "faiss-hf", "tfidf", "none"}
+    assert val in {"openai", "ollama", "huggingface", "tfidf", "none"}
 
 
 def test_simple_qa_fallback_no_match():
@@ -22,7 +22,12 @@ def test_simple_qa_fallback_no_match():
         assert detect_backend() in {"faiss-openai", "faiss-hf", "none"}
         return
 
-    qa, qatype = build_retrieval_qa(store)
+    rv = build_retrieval_qa(store)
+    # build_retrieval_qa may return (qa, qatype) or (qa, qatype, llm)
+    if isinstance(rv, tuple) and len(rv) == 3:
+        qa, qatype, _ = rv
+    else:
+        qa, qatype = rv
     # Our query is unrelated; expect "I don't know" or concatenated but empty sources
     res = qa("qwertyuiopASDFGHJKLZXCVBNM", k=2)
     # Accept either explicit "I don't know" or an empty/short answer when fallback used

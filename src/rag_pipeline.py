@@ -36,6 +36,28 @@ MIN_CHUNK = 400
 MAX_CHUNK = 600
 
 
+# Module-level TF-IDF fallback implementation (exported for tests)
+if HAS_SKLEARN:
+    class SimpleFallbackVectorStore:
+        def __init__(self, docs):
+            self.docs = docs
+            texts = [d.page_content if hasattr(d, 'page_content') else d['page_content'] for d in docs]
+            self.tfidf = TfidfVectorizer().fit(texts + ["placeholder"])
+            self.vectors = self.tfidf.transform(texts).toarray()
+
+        def search(self, query, k=3):
+            qv = self.tfidf.transform([query]).toarray()[0]
+            sims = (self.vectors @ qv) / (
+                (np.linalg.norm(self.vectors, axis=1) * (np.linalg.norm(qv) + 1e-9)) + 1e-9
+            )
+            idxs = sims.argsort()[::-1][:k]
+            return [(self.docs[i], float(sims[i])) for i in idxs]
+else:
+    class SimpleFallbackVectorStore:
+        def __init__(self, docs):
+            raise RuntimeError("scikit-learn not available for SimpleFallbackVectorStore")
+
+
 # ------------------ Fetch & Clean ------------------
 def fetch_html(url: str) -> str:
     resp = requests.get(url, headers={"User-Agent": "multi-page-rag/1.0"})
@@ -144,22 +166,6 @@ def build_vectorstore(docs: List[Any], backend: str = "auto"):
     # --- TF-IDF fallback ---
     if HAS_SKLEARN:
         logger.warning("⚠️ Falling back to TF-IDF vector store.")
-
-        class SimpleFallbackVectorStore:
-            def __init__(self, docs):
-                self.docs = docs
-                texts = [d.page_content for d in docs]
-                self.tfidf = TfidfVectorizer().fit(texts + ["placeholder"])
-                self.vectors = self.tfidf.transform(texts).toarray()
-
-            def search(self, query, k=3):
-                qv = self.tfidf.transform([query]).toarray()[0]
-                sims = (self.vectors @ qv) / (
-                    (np.linalg.norm(self.vectors, axis=1) * (np.linalg.norm(qv) + 1e-9)) + 1e-9
-                )
-                idxs = sims.argsort()[::-1][:k]
-                return [(self.docs[i], float(sims[i])) for i in idxs]
-
         return SimpleFallbackVectorStore(docs), "tfidf"
 
     raise RuntimeError("No valid embedding backend found.")
@@ -311,6 +317,43 @@ def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama
         for cand in ["openai", "ollama", "huggingface"]:
             if try_init(cand):
                 break
+
+    # If LangChain isn't available or the provided vector_store is our TF-IDF fallback,
+    # return a simple deterministic QA fallback that concatenates retrieved chunks.
+    def _search_hits(vs, query: str, k=3, filter_source=None):
+        if hasattr(vs, "search") and not hasattr(vs, "similarity_search_with_score"):
+            docs_and_scores = vs.search(query, k * 3)
+        else:
+            docs_and_scores = vs.similarity_search_with_score(query, k * 3)
+        filtered = []
+        for doc, score in docs_and_scores:
+            meta = doc.metadata if hasattr(doc, "metadata") else getattr(doc, "metadata", {}) or doc.get("metadata", {})
+            src = meta.get("source") if meta else None
+            if filter_source and src and filter_source not in src:
+                continue
+            filtered.append((doc, score))
+            if len(filtered) >= k:
+                break
+        out = []
+        for doc, score in filtered:
+            meta = doc.metadata if hasattr(doc, "metadata") else getattr(doc, "metadata", {}) or doc.get("metadata", {})
+            out.append({"chunk": doc.page_content, "score": float(score), "source": meta.get("source")})
+        return out
+
+    try:
+        is_simple = isinstance(vector_store, SimpleFallbackVectorStore)
+    except Exception:
+        is_simple = False
+    if not HAS_LANGCHAIN or is_simple:
+        def simple_qa(query: str, k: int = 3, filter_source: str = None):
+            hits = _search_hits(vector_store, query, k=k, filter_source=filter_source)
+            if not hits:
+                return {"answer": "I don't know based on the provided documents.", "sources": []}
+            parts = [h["chunk"] for h in hits]
+            sources = [h["source"] for h in hits if h.get("source")]
+            return {"answer": "\n\n".join(parts), "sources": list(dict.fromkeys(sources))}
+
+        return simple_qa, "simple", None
 
         if llm is None:
             try:
