@@ -173,3 +173,16 @@ Appendix: Quick pointer to code (open these)
 - [`src/cli.py`](src/cli.py) — CLI example and ingestion flow
 
 *** End of LLD.md
+
+## Tests added in this release
+
+- `tests/test_dynamic_askers.py` — validates dynamic askers generation and per-page filtering using TF-IDF fallback.
+- `tests/test_build_from_urls_and_fallback.py` — validates `build_from_urls` when LangChain is not present and `build_vectorstore` selects TF-IDF fallback.
+
+CI guidance
+- Configure CI to install minimal runtime deps (scikit-learn, numpy) to run TF-IDF tests; avoid relying on OpenAI credentials in CI.
+- Example CI job steps:
+  1. Setup Python 3.11 environment
+  2. pip install -r requirements.txt
+  3. pip install pytest
+  4. pytest -q

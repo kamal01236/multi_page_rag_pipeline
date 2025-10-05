@@ -79,3 +79,22 @@ References
 Support
 - For additions (OpenAPI, CI, or persistent storage), open an issue or request a patch that updates `src/server_api.py`, `src/rag_pipeline.py`, and adds migration tests.
 
+---
+
+End-to-end implementation summary
+
+This repository implements the full pipeline from requirement → design → implementation:
+
+- Requirement: fetch two or more web pages, clean, chunk, embed, and answer queries with per-page filtering and citation.
+- Design: clear separation of ingestion (fetch/clean/chunk), vectorstore (embedding selection / FAISS), retrieval (`search_db`), QA (`build_retrieval_qa`) and an HTTP surface (`src/server_api.py`).
+- Implementation:
+   - `src/rag_pipeline.py` contains the ingestion helpers, `build_from_urls`, `chunk_text`, `build_vectorstore`, `search_db`, `build_retrieval_qa` and `make_page_specific_askers`.
+   - `src/cli.py` demonstrates ingest + interactive query usage.
+   - `src/server_api.py` provides REST endpoints for ingestion and QA.
+   - `notebooks/multi_page_rag_notebook.ipynb` contains an executable demo of N-page ingestion and per-page askers.
+
+All deliverables are included: code, notebook, tests, LLD, README, and Docker templates. If you'd like, I can:
+- Add an OpenAPI schema for the FastAPI app and include it in the README.
+- Add CI workflows that run TF-IDF-only tests to avoid external API keys in CI.
+
+
