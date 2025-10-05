@@ -9,4 +9,4 @@ COPY . .
 ENV PYTHONPATH="/app"
 EXPOSE 8000
 # Run the FastAPI server by default in the container
-CMD ["uvicorn", "src.server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "src.server_api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

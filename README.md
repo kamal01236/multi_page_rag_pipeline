@@ -1,153 +1,81 @@
-# Multi-Page RAG Pipeline (Industry-standard project, updated)
+# Multi-Page RAG Pipeline — README (updated)
 
-## Overview
-This project implements a Retrieval-Augmented Generation (RAG) pipeline using two Wikipedia pages.
-It includes fetching & cleaning, randomized overlapping chunking, FAISS-backed vector store, similarity search with optional source filtering, and a RetrievalQA module that cites sources and avoids hallucinations.
+This project implements a Retrieval-Augmented Generation (RAG) pipeline that indexes multiple web pages, supports per-page QA, and provides a small HTTP API for ingestion and queries. The code follows industry-standard configuration and separation of concerns.
 
-Now updated to **support multiple embedding/LLM backends**:
-- **OpenAI (default)**: Requires `OPENAI_API_KEY`. High quality embeddings & fluent answers.
-- **HuggingFace (free)**: Uses `sentence-transformers` for embeddings, and `transformers` for local LLMs if available.
-- **Fallback TF-IDF**: Pure scikit-learn, no keys needed, lowest quality but works offline.
+Key code locations
+- Config loader: [`src/config.py`](src/config.py) — use `CONFIG` env-first semantics.
+- Core pipeline: [`src/rag_pipeline.py`](src/rag_pipeline.py) — chunking, vectorstore, retrieval, QA.
+- Server API: [`src/server_api.py`](src/server_api.py) — endpoints for ingest/qa/pages.
+- CLI: [`src/cli.py`](src/cli.py) — example ingestion/interactive usage.
 
-## Structure
-```
-multi_page_rag_project/
-├─ README.md
-├─ LICENSE
-├─ requirements.txt
-├─ .gitignore
-├─ src/
-│  ├─ __init__.py
-│  ├─ rag_pipeline.py
-│  ├─ cli.py
-│  └─ utils.py
-├─ notebooks/
-│  └─ demo_instructions.md
-└─ tests/
-   └─ test_chunking.py
-```
+Features
+- Randomized overlapping chunking (400–600 chars, 50 overlap).
+- Per-chunk metadata with source URL and chunk index.
+- Multi-backend support: OpenAI (remote), Ollama (local), HuggingFace (local/hosted), TF-IDF fallback (deterministic).
+- RetrievalQA that returns only evidence-backed answers and includes `Sources:` in responses.
+- Page-specific askers that restrict answers to a single source (dynamic, not hard-coded).
+- FastAPI endpoints for ingestion and QA.
 
-## Quickstart
-1. Create a Python 3.9+ virtual environment and install dependencies:
-   ```powershell
-   python -m venv .venv; .\.venv\Scripts\Activate.ps1
+Endpoints (examples)
+- GET /healthz — liveness and current backend
+- POST /ingest — { urls: [..], seed?: int, backend?: "auto"|... } → builds index + QA callable + askers
+- GET /pages — list indexed pages
+- POST /qa — { query: str, k?: int, filter_source?: str } → returns answer, sources, backend, confidence
+- POST /qa/{slug} — page-specific QA by slug
+- POST /batch_qa — run multiple queries in batch
+
+How it works (high level)
+1. Ingest flow: user supplies URLs → [`build_from_urls`](src/rag_pipeline.py) fetches and cleans HTML → `chunk_text` chunker creates randomized overlapping chunks → [`build_vectorstore`](src/rag_pipeline.py) creates FAISS or TF-IDF vectorstore storing per-chunk metadata.
+2. QA flow: incoming query → [`search_db`](src/rag_pipeline.py) retrieves top candidates (k * multiplier) → apply post-retrieval filtering (filter_source) → compute confidence → if enough evidence call LLM through [`build_retrieval_qa`](src/rag_pipeline.py) else return "I don't know based on the provided documents.".
+3. Page askers: [`make_page_specific_askers`](src/rag_pipeline.py) produces slug→callable that invokes QA with `filter_source`.
+
+Configuration
+- Environment-first loader in [`src/config.py`](src/config.py)
+- Set secrets via env: `OPENAI_API_KEY`, `HUGGINGFACEHUB_API_TOKEN`, `OLLAMA_TOKEN`.
+- Optional config file at `./config/config.yaml` or path set by `RAG_CONFIG_FILE` (env).
+- Control backends via `RAG_EMB_BACKEND`, `RAG_LLM_BACKEND`, `RAG_DEFAULT_BACKEND`, and `FORCE_OLLAMA`.
+
+Quickstart
+1. Install:
    pip install -r requirements.txt
-   ```
 
-2. Export an OpenAI key (optional). If you have an OpenAI API key and want to use OpenAI embeddings/LLM set the environment variable before running (PowerShell example):
-   ```powershell
-   $env:OPENAI_API_KEY = "sk-..."
-   ```
+2. Run demo using TF-IDF fallback (no keys required):
+   python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning --backend tfidf
 
-3. Run the demo script (example). The CLI will log which backend is selected (OpenAI / HuggingFace / TF-IDF fallback):
-   ```powershell
-   python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning
-   ```
+3. Run server:
+   uvicorn src.server_api:app --reload
 
-Notes:
-- If `OPENAI_API_KEY` is present and LangChain is installed, the pipeline will prefer OpenAI embeddings + FAISS and will log "Using OpenAI embeddings/LLM".
-- If LangChain is installed but no OpenAI key is present, the pipeline will try a HuggingFace sentence-transformer model and log "Using HuggingFace embeddings/LLM".
-- If embeddings/FAISS cannot be constructed or LangChain is not available, a TF-IDF fallback is used (no keys required) and the pipeline will log "Using TF-IDF fallback vector store".
-- The notebook in `notebooks/multi_page_rag_notebook.ipynb` contains a runnable demo that follows the same logic.
+4. Example API usage:
+   POST /ingest with JSON { "urls": ["https://.../Quantum_computing", "https://.../Quantum_machine_learning"] }
+   POST /qa with JSON { "query": "What is a qubit?" }
 
-Approach and rationale
-----------------------
-This repository implements a robust, multi-backend RAG pipeline so it can run in a wide variety of environments:
+Testing
+- Unit & integration tests rely on TF-IDF fallback for deterministic results.
+- Run tests:
+   pytest -q
 
-- Primary: OpenAI embeddings + FAISS (best quality; requires `OPENAI_API_KEY`).
-- Optional local LLM: Ollama (fast, runs locally) — can be forced with `FORCE_OLLAMA=1` or autodetected if reachable.
-- Secondary: HuggingFace sentence-transformers when LangChain is present but no OpenAI key is configured.
-- Fallback: TF-IDF (scikit-learn) vector store used when embeddings/FAISS or LangChain are not available.
+- New comprehensive endpoint tests: `tests/test_server_endpoints_full.py`
 
-Why this fallback chain?
-- Portability: developers should be able to run experiments locally without API keys or heavy models.
-- Cost and reliability: OpenAI delivers high-quality results but requires keys and may hit rate limits; Ollama lets teams run instruction-tuned models locally and is a cheap/repeatable option.
-- Predictability: TF-IDF provides a deterministic, offline fallback so the ingestion/search pieces can still be validated in CI or constrained environments.
+Deliverables
+- Source: `src/` (pipeline and server)
+- Notebook demo: `notebooks/multi_page_rag_notebook.ipynb`
+- LLD: `LLD.md` (this file)
+- README: `README.md` (this file)
+- Tests: `tests/` (including endpoint tests)
+- Dockerfile & docker-compose for local demonstration (ollama placeholder)
 
-How the pipeline chooses a backend (high level)
-- If `FORCE_OLLAMA=1` the system will try Ollama embeddings/LLM first.
-- Else, if `OPENAI_API_KEY` is set and OpenAI calls succeed, the pipeline prefers OpenAI.
-- If OpenAI isn't available or fails, the pipeline will try a local Ollama instance (if reachable) and then HuggingFaceHub.
-- If those all fail, the pipeline falls back to TF-IDF.
+Production recommendations
+- Persist FAISS + metadata JSONL and provide migration utilities.
+- Use secrets manager for API keys.
+- Add authentication, rate limiting, observability (metrics/tracing).
+- Implement file locks for index writes and safe FAISS merges for incremental ingestion.
 
-Logging & observability
-- The CLI and pipeline log the backend decisions and warnings; watch console output for lines like:
-   - "Using OpenAI embeddings via FAISS." (OpenAI chosen)
-   - "Using Ollama (mistral:instruct)." (Ollama chosen)
-   - "Falling back to TF-IDF vector store." (fallback)
+References
+- [`src/config.py`](src/config.py)
+- [`src/rag_pipeline.py`](src/rag_pipeline.py)
+- [`src/server_api.py`](src/server_api.py)
+- [`src/cli.py`](src/cli.py)
 
-Running with Ollama (example)
-```powershell
-# set environment to prefer Ollama
-$env:FORCE_OLLAMA = '1'
-$env:OLLAMA_URL = 'http://localhost:11434'
-# optionally if your Ollama requires a token
-$env:OLLAMA_TOKEN = 'my-token'
-python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing
-```
-
-Developer testing tips (suggested test cases)
-- Unit: `tests/test_chunking.py` ensures chunking behavior.
-- Backend detection: set `FORCE_OLLAMA=1` or `OPENAI_API_KEY` in test env and assert `detect_backend()` reports expected backend.
-- Retrieval fallback: run the pipeline with only scikit-learn available and assert the QA fallback returns deterministic concatenated chunks when asked a query.
-- Integration: run the demo end-to-end locally with small pages and validate that `askers` return answers with `sources` metadata.
-
-Deliverables provided in this repository
---------------------------------------
-- Implementation: Python source in `src/` implementing fetching, cleaning, randomized chunking, vector store building (OpenAI/HuggingFace/Ollama/TF-IDF fallback), similarity search, and RetrievalQA with source citations.
-- CLI: `src/cli.py` — demo runner supporting `--emb-backend`, `--llm-backend`, and `--show-config` flags.
-- Notebook: `notebooks/multi_page_rag_notebook.ipynb` demonstrates the pipeline flow and experiments.
-- Server: `src/server.py` — example FastAPI wrapper with `/healthz`, `/readyz` and `/qa` endpoints (demo-level).
-- Config: `src/config.py` and sample `config/config.yaml` demonstrating `emb_backend`, `llm_backend`, and other keys. Environment variables override file settings.
-- Tests: `tests/` includes chunking and TF-IDF tests plus config precedence tests.
-- Docker: `Dockerfile` and `docker-compose.yml` sample for running the app + Ollama (placeholder service) locally.
-
-Assumptions considered
----------------------
-- Network and keys: If `OPENAI_API_KEY` is provided, the pipeline prefers OpenAI for embeddings and LLMs in `auto` mode. If not provided, it will attempt Ollama (if reachable) and then HuggingFace, falling back to TF-IDF.
-- Local Ollama: `docker-compose.yml` references a placeholder Ollama image. Running Ollama in production requires following Ollama's install and model provisioning instructions.
-- Deterministic testing: TF-IDF fallback is provided to allow deterministic CI/unit testing without external APIs.
-
-Observations and expected outputs
----------------------------------
-- LLM vs raw chunks: When an LLM backend (OpenAI/Ollama/HF instr.) is available, RetrievalQA synthesizes a concise answer from multiple chunks and includes a `Sources` list (URLs) derived from chunk metadata. The TF-IDF fallback returns concatenated chunks (no synthesis).
-- Combining pages: The QA wrapper merges facts from multiple chunks and lists source URLs. The `make_page_specific_askers` factory returns functions that answer using a single-page post-filtering of retrieved chunks.
-- Hallucination guard: The prompt instructs the LLM to answer only from provided context and to reply "I don't know based on the provided documents." when missing information, minimizing hallucination risk.
-
-How to validate the deliverables
---------------------------------
-1. Unit tests
-```powershell
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pytest -q
-```
-
-2. Quick demo with TF-IDF (no keys required)
-```powershell
-python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning --emb-backend tfidf --llm-backend tfidf
-```
-
-3. Demo with OpenAI (if you have a key)
-```powershell
-$env:OPENAI_API_KEY = 'sk-...'
-python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning --backend openai
-```
-
-4. Run the FastAPI server (development)
-```powershell
-uvicorn src.server:app --reload
-curl http://localhost:8000/healthz
-```
-
-Run the tests (after installing pytest):
-```powershell
-pip install pytest
-pytest -q
-```
-
-## Backends
-- **OpenAI**: export `OPENAI_API_KEY` before running to enable.
-- **HuggingFace**: no key required; works with free local models.
-- **Fallback (TF-IDF)**: automatic if neither OpenAI nor HuggingFace available.
+Support
+- For additions (OpenAPI, CI, or persistent storage), open an issue or request a patch that updates `src/server_api.py`, `src/rag_pipeline.py`, and adds migration tests.
 

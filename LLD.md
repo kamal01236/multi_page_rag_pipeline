@@ -1,51 +1,175 @@
-# Low-Level Design (LLD) for Multi-Page RAG Pipeline
+# Low-Level Design (LLD) — Multi-Page RAG Pipeline
 
-This document describes the components and flow for the multi-page RAG pipeline implemented in the repository.
+This LLD specifies an authoritative, implementable design for a Multi-Page Retrieval-Augmented Generation (RAG) pipeline that supports N pages, per-page QA, and safe RetrievalQA behavior. It defines the data model, required public functions and signatures, pseudocode for core operations, incremental ingestion and FAISS merge guidance, confidence heuristics, logging contracts, and test cases.
 
-Components
+Primary goals
+- Index N pages into a single persisted vector DB (FAISS) with per-chunk provenance metadata.
+- Provide deterministic TF-IDF fallback for CI/offline tests.
+- Expose a small HTTP API for ingestion and QA.
+- Provide clear, environment-first configuration and separation of concerns.
 
-- fetch_html(url): simple HTTP fetch with a polite User-Agent.
-- clean_wikipedia_html(html): uses BeautifulSoup to extract main page content, removes scripts, tables, superscripts, and stops at common reference sections.
-- randomized_chunks(text): produces overlapping chunks; chunk size is randomized between MIN_CHUNK and MAX_CHUNK (400-600 chars by default) with a fixed overlap (50 chars).
-- Document construction: each chunk becomes a LangChain Document with metadata {source, title, chunk_index}.
-- build_vectorstore(docs): tries FAISS with OpenAI embeddings, falls back to HF embeddings, and finally to a TF-IDF fallback (scikit-learn) if embeddings are unavailable.
-	- The system will log which backend is used. Preference order:
-		1. OpenAI (requires OPENAI_API_KEY and LangChain available) — logs: "Using OpenAI embeddings/LLM".
-		2. HuggingFace (LangChain + sentence-transformers) — logs: "Using HuggingFace embeddings/LLM".
-		3. TF-IDF fallback (scikit-learn) — logs: "Using TF-IDF fallback vector store".
-	- This implementation expands the chain to also support Ollama as both an embeddings and LLM provider. The prioritized list becomes:
-		1. Ollama (if `FORCE_OLLAMA=1` or Ollama reachable and preferred)
-		2. OpenAI (if `OPENAI_API_KEY` set and healthy)
-		3. HuggingFace (sentence-transformers)
-		4. TF-IDF fallback (scikit-learn)
+References to implemented code (open to inspect wiring)
+- Configuration: [`Config`](src/config.py), [`load_config`](src/config.py), [`CONFIG`](src/config.py) — [src/config.py](src/config.py)
+- Vectorstore & search: [`build_vectorstore`](src/rag_pipeline.py), [`search_db`](src/rag_pipeline.py), [`SimpleFallbackVectorStore`](src/rag_pipeline.py) — [src/rag_pipeline.py](src/rag_pipeline.py)
+- RetrievalQA, LLM selection: [`build_retrieval_qa`](src/rag_pipeline.py), [`detect_backend`](src/rag_pipeline.py) — [src/rag_pipeline.py](src/rag_pipeline.py)
+- Page-specific askers factory: [`make_page_specific_askers`](src/rag_pipeline.py) — [src/rag_pipeline.py](src/rag_pipeline.py)
+- CLI integration: [src/cli.py](src/cli.py)
+- HTTP endpoints: [src/server_api.py](src/server_api.py)
 
-	- Rationale: Ollama provides a local, low-latency LLM option for teams who run models on-prem or on dedicated machines. The FORCE_OLLAMA flag allows deterministic CI/local testing.
-- search_db(vector_store, query, k, filter_source): returns top-k matching chunks and their source URL; supports optional post-retrieval source filtering.
-- build_retrieval_qa(vector_store): builds a RetrievalQA chain when LangChain is available; creates a conservative prompt to discourage hallucinations and to require source listing. Returns a callable that always returns a dict {answer, sources}.
-	- When building the QA wrapper the code will log which QA path is used (LangChain LLM wrapper vs simple concatenation fallback). The QA wrapper enforces:
-		- temperature=0 where supported to reduce randomness.
-		- A conservative prompt instructing: "Use ONLY the information in the provided context" and to reply "I don't know" if the information isn't present.
-		- When running, the wrapper returns a standardized dict: {answer, sources} so callers can programmatically inspect provenance.
+---
 
-Design note: Recovery and determinism
-- The pipeline prefers higher-quality remote LLMs/embeddings (OpenAI/FAISS) but includes a deterministic, local TF-IDF fallback so CI runs and developer tests remain repeatable without API access.
-- `FORCE_OLLAMA` exists so CI or local developers can test Ollama-flavored behavior even when OpenAI is configured in their environment.
+1. From requirements to design to implementation (overview)
+- Requirements
+  - Fetch and parse N web pages (Wikipedia used in demo).
+  - Clean text to remove menus/citations, produce readable chunks.
+  - Randomized overlapping chunking (400–600 chars, 50-char overlap, seedable).
+  - Store chunks in a vector DB with per-chunk metadata (source URL, title, chunk_index).
+  - Similarity search with post-retrieval source filtering.
+  - RetrievalQA chain that uses only retrieved chunks, returns "I don't know based on the provided documents." when evidence insufficient, and includes a `Sources:` section with URLs.
+  - Per-page askers (page-specific QA) that are dynamic and not hard-coded.
 
-Test cases (recommended)
-- `test_chunking.py`: validates randomized chunk sizes and overlap invariants.
-- `test_backends.py`: asserts `detect_backend()` returns valid names under different env settings (FORCE_OLLAMA, OPENAI_API_KEY present, etc.).
-- `test_tfidf_fallback.py`: constructs a tiny SimpleFallbackVectorStore and asserts `search()` returns the highest-similarity document for a matching query.
-- `test_retrieval_qa_fallback.py`: validates that when no LLM is available the simple QA returns concatenated chunks and an empty or predictable sources list.
-- make_page_specific_askers(vector_store, qa_callable, urls): factory that returns per-page askers that call the QA with a post-retrieval source filter.
+- Design choices (implemented)
+  - Centralized, environment-first configuration: see [`src/config.py`](src/config.py) — env overrides config file; keys: RAG_DEFAULT_BACKEND, RAG_EMB_BACKEND, RAG_LLM_BACKEND, FORCE_OLLAMA, OPENAI_API_KEY, OLLAMA_URL, OLLAMA_TOKEN, HUGGINGFACEHUB_API_TOKEN.
+  - Separation of concerns:
+    - config loader: [`src/config.py`](src/config.py)
+    - ingestion & chunking: [`src/rag_pipeline.py::build_from_urls`](src/rag_pipeline.py)
+    - embeddings/vectorstore: [`src/rag_pipeline.py::build_vectorstore`](src/rag_pipeline.py)
+    - retrieval & LLM QA: [`src/rag_pipeline.py::build_retrieval_qa`](src/rag_pipeline.py)
+    - HTTP surface: [`src/server_api.py`](src/server_api.py)
+  - Deterministic fallback: `SimpleFallbackVectorStore` (TF-IDF) in [`src/rag_pipeline.py`](src/rag_pipeline.py) for CI/test reproducibility.
 
-Quality & Safety
+- Implementation highlights
+  - Chunk metadata includes `source`, `title`, `chunk_index`. Stored vector ids and metadata mapping strategy is documented in this LLD and implemented as in-memory persistence for the demo; production should persist FAISS + metadata JSONL (see Incremental Ingestion).
+  - `search_db` performs candidate fetching using a multiplier (k * 3) and applies post-retrieval filtering by source substring match (case-insensitive).
+  - `build_retrieval_qa` wraps a strict prompt that instructs the LLM not to hallucinate and to include a `Sources:` section; if confidence is low (configurable), returns the canonical "I don't know..." string.
+  - `make_page_specific_askers` is dynamic: it enumerates indexed sources and returns slug → asker functions that call the QA callable with `filter_source`.
 
-- LLMs are invoked with temperature=0 where possible to reduce randomness.
-- The prompt explicitly instructs the model to "Use ONLY the information in the provided context" and to respond with "I don't know" if information is missing.
-- For environments without LangChain or embeddings, a TF-IDF fallback is used (best-effort).
+---
 
-Notes
+2. API Endpoints (detailed) — implemented in [`src/server_api.py`](src/server_api.py)
 
-- The implementation aims for portability: it will run entirely locally with TF-IDF if OpenAI keys or models are not present.
-- The system preserves chunk-level provenance via metadata so answers can cite the exact source page(s).
+All endpoints are defined in [src/server_api.py](src/server_api.py).
 
+- GET /healthz
+  - Purpose: basic liveness check and current backend.
+  - Response: { "status": "ok", "backend": "<backend>" }
+  - Implementation: returns STATE["backend"].
+
+- POST /ingest
+  - Purpose: ingest one or more URLs and build vector store + QA chain + page askers.
+  - Request model: IngestRequest { urls: List[str], seed?: int, backend?: str = "auto", overwrite?: bool }
+  - Behavior:
+    - Calls [`build_from_urls`](src/rag_pipeline.py) to fetch + clean + chunk + embed using the selected embedding backend.
+    - Persists in-memory state (docs, vector_store).
+    - Calls [`build_retrieval_qa`](src/rag_pipeline.py) to build a QA callable (LLM or TF-IDF fallback).
+    - Calls [`make_page_specific_askers`](src/rag_pipeline.py) to construct page-specific askers.
+    - Returns JSON with pages_indexed, total_chunks, backend, askers_available.
+  - Errors:
+    - 500 if ingestion or QA chain construction fails.
+
+- GET /pages
+  - Purpose: list indexed unique source URLs.
+  - Response: { count: int, pages: [urls...] }
+
+- POST /qa
+  - Purpose: general QA across all indexed pages.
+  - Request model: QARequest { query: str, k?: int, filter_source?: Optional[str] }
+  - Behavior:
+    - If a QA callable exists (LLM or simple), calls it and returns its answer + sources.
+    - Otherwise, falls back to [`search_db`](src/rag_pipeline.py) to return concatenated chunks plus confidence.
+  - Errors:
+    - 400 if no vector store present (ingest first).
+    - 500 on server errors.
+
+- POST /qa/{slug}
+  - Purpose: page-specific QA using slug created from source URL.
+  - Behavior:
+    - Find created askers via STATE["askers"] and invoke the slug function.
+    - Returns answer + sources or 404-like message if slug not found.
+
+- POST /batch_qa
+  - Purpose: run multiple queries in a batch.
+  - Request model: BatchQARequest { queries: List[str], k?: int }
+  - Behavior:
+    - Iterates queries, calls /qa logic for each, returns results list.
+  - Note: For heavy workloads use async/streaming or queue-based processing in production.
+
+Mapping endpoints → code
+- Ingestion: [`build_from_urls`](src/rag_pipeline.py) → [`build_vectorstore`](src/rag_pipeline.py) → persisted STATE in [src/server_api.py](src/server_api.py).
+- QA: [`build_retrieval_qa`](src/rag_pipeline.py) produces callable used by /qa and page askers.
+- Post-filtering: [`search_db`](src/rag_pipeline.py) implements post-retrieval filtering.
+
+---
+
+3. Data model & persistence (short)
+- Chunk representation (in memory): Document (or dict) with fields: page_content, metadata: { source, title, chunk_index, ingest_ts }.
+- Production persistence:
+  - FAISS index files on disk (or cloud object store).
+  - Metadata JSONL mapping id → metadata (atomic write via .tmp → rename).
+  - Deterministic mapping between FAISS vector ids and metadata ids is required (store explicit id mapping or use consistent sequential IDs).
+
+---
+
+4. Confidence & hallucination guard (implemented)
+- Compute normalized confidence from retrieved scores (map to [0,1]). Default threshold recommended 0.35 (see config).
+- If confidence < threshold, return exactly: "I don't know based on the provided documents." and do not call LLM.
+- The LLM prompt contains the hard constraint to only use provided context and include Sources.
+
+---
+
+5. Per-page askers
+- [`make_page_specific_askers`](src/rag_pipeline.py) enumerates sources and generates slug keys (sanitized last path element).
+- Each asker calls the QA callable with `filter_source` set to that canonical URL (post-retrieval filtering).
+
+---
+
+6. Incremental ingest & index update (guidance)
+- Append new vectors using FAISS.add(new_vectors) with consistent id mapping.
+- Append metadata atomically to metadata JSONL; when overwriting use `--overwrite` semantics: remove previous chunks for the same source then add new ones.
+- Use file locks for concurrency when writing FAISS + metadata.
+
+---
+
+7. Observability & logs (what is emitted)
+- search_db: INFO logs with query, k_requested, k_returned, filter_source.
+- QA invocation: INFO logs with query, confidence, used_sources, llm_backend. WARNING on missing citations or fallback.
+- Ingest: INFO logs with urls_processed, chunks_created, embeddings_backend.
+
+---
+
+8. Tests (what to run)
+- Unit tests should rely on TF-IDF fallback for determinism.
+- Integration tests use the HTTP endpoints in [src/server_api.py](src/server_api.py) with monkeypatched pipeline internals to avoid external network calls.
+- Provided test file: tests/test_server_endpoints_full.py (see tests/) covers:
+  - /healthz
+  - /ingest success and failure
+  - /pages listing
+  - /qa with qa_callable and fallback
+  - /qa/{slug} page-specific behavior
+  - /batch_qa
+
+---
+
+9. Failures and mitigation
+- External APIs (OpenAI) may fail or rate-limit — system falls back to HuggingFace or TF-IDF.
+- If LLM fails at runtime, the server will fallback to the simple retrieval answer.
+- For production robustness, add retry/backoff, circuit-breaker, and metrics.
+
+---
+
+10. Next production hardening recommendations
+- Persist FAISS + metadata to durable storage and implement safe index migration/compaction.
+- Add authentication + rate-limiting to HTTP endpoints.
+- Add monitoring and metrics (Prometheus + logs).
+- Use secrets manager for API keys (do not store keys in config file).
+- Add CI job that runs TF-IDF-only integration tests to avoid dependence on cloud APIs.
+
+---
+
+Appendix: Quick pointer to code (open these)
+- [`src/config.py`](src/config.py) — configuration loader (`CONFIG`)
+- [`src/rag_pipeline.py`](src/rag_pipeline.py) — chunking, `build_vectorstore`, `search_db`, `build_retrieval_qa`, `make_page_specific_askers`, `build_from_urls`
+- [`src/server_api.py`](src/server_api.py) — HTTP endpoints implementation
+- [`src/cli.py`](src/cli.py) — CLI example and ingestion flow
+
+*** End of LLD.md
