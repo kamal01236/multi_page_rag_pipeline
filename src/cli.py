@@ -1,17 +1,30 @@
 """
-CLI entrypoint for the project. Example usage:
+CLI entrypoint for the RAG pipeline using Ollama backend.
+Example usage:
 
-python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning
+python -m src.cli \
+  --urls https://en.wikipedia.org/wiki/Quantum_computing \
+         https://en.wikipedia.org/wiki/Quantum_machine_learning \
+  --ollama-url http://localhost:11434 \
+  --ollama-token my-secret-token
 """
 
 import argparse
 import logging
-from .rag_pipeline import fetch_html, clean_wikipedia_html, randomized_chunks, build_vectorstore, build_retrieval_qa, make_page_specific_askers
-from .rag_pipeline import detect_backend
 from langchain.docstore.document import Document
+from .rag_pipeline import (
+    fetch_html,
+    clean_wikipedia_html,
+    randomized_chunks,
+    build_vectorstore,
+    build_retrieval_qa,
+    make_page_specific_askers,
+    detect_backend,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
 
 def build_from_urls(urls, seed=None):
     docs = []
@@ -30,14 +43,14 @@ def build_from_urls(urls, seed=None):
     return docs, store
 
 
-def demo_pipeline(urls=None, seed=42):
+def demo_pipeline(urls=None, seed=42, ollama_url=None, ollama_token=None):
     if urls is None:
         urls = [
             "https://en.wikipedia.org/wiki/Quantum_computing",
             "https://en.wikipedia.org/wiki/Quantum_machine_learning",
         ]
     docs, store = build_from_urls(urls, seed=seed)
-    qa, qatype = build_retrieval_qa(store)
+    qa, qatype = build_retrieval_qa(store, ollama_url=ollama_url, ollama_token=ollama_token)
     askers = make_page_specific_askers(store, qa, urls)
     return {
         "docs": docs,
@@ -47,30 +60,39 @@ def demo_pipeline(urls=None, seed=42):
         "askers": askers,
     }
 
+
 def main():
-    parser = argparse.ArgumentParser(description='Multi-page RAG pipeline demo')
+    parser = argparse.ArgumentParser(description='Multi-page RAG pipeline demo (with Ollama)')
     parser.add_argument('--urls', nargs='+', required=True, help='Two or more URLs to ingest')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--ollama-url', type=str, default='http://localhost:11434', help='Ollama base URL')
+    parser.add_argument('--ollama-token', type=str, default=None, help='Ollama API token (if required)')
     args = parser.parse_args()
+
     docs, store = build_from_urls(args.urls, seed=args.seed)
-    qa, qatype = build_retrieval_qa(store)
+    qa, qatype = build_retrieval_qa(store, ollama_url=args.ollama_url, ollama_token=args.ollama_token)
+
     print("QA type:", qatype)
+
     # demo queries
     queries = [
-        "what are Quantum neural networks?",
+        "What are Quantum neural networks?",
         "What is the basic unit of information in quantum computing?",
     ]
     for q in queries:
-        print("\\nQUERY:", q)
+        print("\nQUERY:", q)
         if qatype == 'langchain':
-            # run the langchain qa
             res = qa.invoke({"query": q})
             print("ANSWER:", res["result"])
             print("SOURCES:", [d.metadata["source"] for d in res["source_documents"]])
         else:
-            res = qa(q, k=3)
-            print("ANSWER:\\n", res['answer'][:1000])
-            print("SOURCES:", res['sources'])
+            # Use modern LangChain invoke API
+            res = qa.invoke({"query": q})
+
+            print("ANSWER:\n", res.get("result", "")[:1000])
+            sources = [d.metadata.get("source", "") for d in res.get("source_documents", [])]
+            print("SOURCES:", sources)
+
 
 if __name__ == '__main__':
     main()
