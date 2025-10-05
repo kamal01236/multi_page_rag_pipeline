@@ -1,4 +1,5 @@
-# Multi-Page RAG Pipeline — README (updated)
+# Multi-Page RAG Pipeline
+Repository: kamal01236/heart_attack_prediction
 
 This project implements a Retrieval-Augmented Generation (RAG) pipeline that indexes multiple web pages, supports per-page QA, and provides a small HTTP API for ingestion and queries. The code follows industry-standard configuration and separation of concerns.
 # Multi-Page RAG Pipeline — Single authoritative README
