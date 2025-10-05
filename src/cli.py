@@ -111,17 +111,47 @@ def main():
     ]
     for q in queries:
         print("\nQUERY:", q)
-        # Use the QA chain's invoke API where available
+        # Use the QA chain's invoke API where available.
+        # Temporarily raise logger levels to WARNING to avoid noisy INFO logs
+        root_logger = logging.getLogger()
+        httpx_logger = logging.getLogger("httpx")
+        openai_logger = logging.getLogger("openai")
+        rag_logger = logging.getLogger("src.rag_pipeline")
+        faiss_logger = logging.getLogger("faiss.loader")
+        prev_levels = {
+            "root": root_logger.level,
+            "httpx": httpx_logger.level,
+            "openai": openai_logger.level,
+            "rag": rag_logger.level,
+            "faiss": faiss_logger.level,
+        }
         try:
-            res = qa.invoke({"query": q})
-            if isinstance(res, dict):
-                print("ANSWER:\n", res.get("result") or res.get("output_text") or str(res))
-                srcs = [d.metadata.get("source", "") for d in res.get("source_documents", [])] if res.get("source_documents") else []
-                print("SOURCES:", srcs)
-            else:
-                print("ANSWER:\n", str(res))
-        except Exception as e:
-            print("QA invocation failed:", e)
+            root_logger.setLevel(logging.WARNING)
+            httpx_logger.setLevel(logging.WARNING)
+            openai_logger.setLevel(logging.WARNING)
+            rag_logger.setLevel(logging.WARNING)
+            faiss_logger.setLevel(logging.WARNING)
+
+            try:
+                res = qa.invoke({"query": q})
+            except Exception:
+                # Some QA callables are simple functions
+                res = qa(q)
+        finally:
+            # restore previous levels
+            root_logger.setLevel(prev_levels["root"])
+            httpx_logger.setLevel(prev_levels["httpx"])
+            openai_logger.setLevel(prev_levels["openai"])
+            rag_logger.setLevel(prev_levels["rag"])
+            faiss_logger.setLevel(prev_levels["faiss"])
+
+        # Print the result
+        if isinstance(res, dict):
+            print("ANSWER:\n", res.get("result") or res.get("answer") or res.get("output_text") or str(res))
+            srcs = [d.metadata.get("source", "") for d in res.get("source_documents", [])] if res.get("source_documents") else res.get("sources", [])
+            print("SOURCES:", srcs)
+        else:
+            print("ANSWER:\n", str(res))
 
 
 if __name__ == '__main__':
