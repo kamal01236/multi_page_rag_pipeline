@@ -1,0 +1,10 @@
+langchain>=0.0.300
+faiss-cpu
+openai
+requests
+beautifulsoup4
+scikit-learn
+numpy
+pytest
+sentence-transformers
+transformers
