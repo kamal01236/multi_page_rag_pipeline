@@ -1,16 +1,35 @@
-# Sample configuration for the multi-page RAG pipeline
-# Supported keys:
-# default_backend: auto | openai | ollama | huggingface | tfidf
-# force_ollama: true/false (if true, Ollama will be tried first in auto mode)
-# ollama_url: URL for local Ollama instance
-# ollama_token: optional Ollama API token
-# openai_api_key: optional OpenAI API key (env is preferred)
+# Sample configuration for the Multi-Page RAG pipeline
+#
+# Configuration precedence: Environment variables override keys in this file.
+# Place this file at one of:
+#  - path set by $RAG_CONFIG_FILE
+#  - ./config/config.yaml
+#  - ./config.yaml
+#
+# Keys:
+#  default_backend: overall default when specific emb/llm backends are not set.
+#  emb_backend: the backend used for embeddings/vectorstore. Options: auto|openai|ollama|huggingface|tfidf
+#  llm_backend: the backend used for LLM in RetrievalQA. Options: auto|openai|ollama|huggingface|tfidf
+#  force_ollama: boolean - if true, Ollama is tried first in auto selection
+#  ollama_url / ollama_token: standard Ollama connection settings
+#  openai_api_key: optional; preferred to be provided via env var OPENAI_API_KEY
+#  huggingfacehub_api_token: optional, for HuggingFaceHub
 
-default_backend: auto
+default_backend: auto        # overall default when emb_backend/llm_backend are 'auto'
+emb_backend: auto            # embeddings backend (auto prefers OpenAI/Ollama/HF/TF-IDF)
+llm_backend: auto            # LLM backend for RetrievalQA
 force_ollama: false
+
+# Ollama settings (used if emb_backend/llm_backend == 'ollama' or autodetected)
 ollama_url: http://localhost:11434
 ollama_token: ''
+
+# OpenAI settings (prefer to set via env: OPENAI_API_KEY)
 openai_api_key: ''
+
+# HuggingFace Hub token (optional)
 huggingfacehub_api_token: ''
-emb_backend: auto
-llm_backend: auto
+
+# Notes:
+# - Use environment variables in production (secrets managers), e.g. OPENAI_API_KEY.
+# - emb_backend/llm_backend can be set independently to control where embeddings and LLM run.

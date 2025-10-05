@@ -38,8 +38,11 @@ def build_from_urls(urls, seed=None):
             meta = {'source': url, 'title': title, 'chunk_index': i}
             docs.append(Document(page_content=c, metadata=meta))
         logger.info("Created %d chunks for %s", len(chunks), title)
-    # No explicit backend chosen here; caller may request a backend via demo_pipeline/main
-    store, stype = build_vectorstore(docs)
+    # Use CONFIG defaults when no explicit backend requested by caller.
+    # Prefer emb_backend from CONFIG if set, else CONFIG.default_backend, else auto.
+    from .config import CONFIG as _CONFIG
+    chosen = _CONFIG.emb_backend or _CONFIG.default_backend or "auto"
+    store, stype = build_vectorstore(docs, backend=chosen)
     logger.info("Built vector store: %s", stype)
     logger.info("Detected backend (helper): %s", detect_backend())
     return docs, store

@@ -92,6 +92,54 @@ Developer testing tips (suggested test cases)
 - Retrieval fallback: run the pipeline with only scikit-learn available and assert the QA fallback returns deterministic concatenated chunks when asked a query.
 - Integration: run the demo end-to-end locally with small pages and validate that `askers` return answers with `sources` metadata.
 
+Deliverables provided in this repository
+--------------------------------------
+- Implementation: Python source in `src/` implementing fetching, cleaning, randomized chunking, vector store building (OpenAI/HuggingFace/Ollama/TF-IDF fallback), similarity search, and RetrievalQA with source citations.
+- CLI: `src/cli.py` — demo runner supporting `--emb-backend`, `--llm-backend`, and `--show-config` flags.
+- Notebook: `notebooks/multi_page_rag_notebook.ipynb` demonstrates the pipeline flow and experiments.
+- Server: `src/server.py` — example FastAPI wrapper with `/healthz`, `/readyz` and `/qa` endpoints (demo-level).
+- Config: `src/config.py` and sample `config/config.yaml` demonstrating `emb_backend`, `llm_backend`, and other keys. Environment variables override file settings.
+- Tests: `tests/` includes chunking and TF-IDF tests plus config precedence tests.
+- Docker: `Dockerfile` and `docker-compose.yml` sample for running the app + Ollama (placeholder service) locally.
+
+Assumptions considered
+---------------------
+- Network and keys: If `OPENAI_API_KEY` is provided, the pipeline prefers OpenAI for embeddings and LLMs in `auto` mode. If not provided, it will attempt Ollama (if reachable) and then HuggingFace, falling back to TF-IDF.
+- Local Ollama: `docker-compose.yml` references a placeholder Ollama image. Running Ollama in production requires following Ollama's install and model provisioning instructions.
+- Deterministic testing: TF-IDF fallback is provided to allow deterministic CI/unit testing without external APIs.
+
+Observations and expected outputs
+---------------------------------
+- LLM vs raw chunks: When an LLM backend (OpenAI/Ollama/HF instr.) is available, RetrievalQA synthesizes a concise answer from multiple chunks and includes a `Sources` list (URLs) derived from chunk metadata. The TF-IDF fallback returns concatenated chunks (no synthesis).
+- Combining pages: The QA wrapper merges facts from multiple chunks and lists source URLs. The `make_page_specific_askers` factory returns functions that answer using a single-page post-filtering of retrieved chunks.
+- Hallucination guard: The prompt instructs the LLM to answer only from provided context and to reply "I don't know based on the provided documents." when missing information, minimizing hallucination risk.
+
+How to validate the deliverables
+--------------------------------
+1. Unit tests
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pytest -q
+```
+
+2. Quick demo with TF-IDF (no keys required)
+```powershell
+python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning --emb-backend tfidf --llm-backend tfidf
+```
+
+3. Demo with OpenAI (if you have a key)
+```powershell
+$env:OPENAI_API_KEY = 'sk-...'
+python -m src.cli --urls https://en.wikipedia.org/wiki/Quantum_computing https://en.wikipedia.org/wiki/Quantum_machine_learning --backend openai
+```
+
+4. Run the FastAPI server (development)
+```powershell
+uvicorn src.server:app --reload
+curl http://localhost:8000/healthz
+```
+
 Run the tests (after installing pytest):
 ```powershell
 pip install pytest
