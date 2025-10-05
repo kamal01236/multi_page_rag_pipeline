@@ -58,7 +58,7 @@ Testing
 
 Deliverables
 - Source: `src/` (pipeline and server)
-- Notebook demo: `notebooks/multi_page_rag_notebook.ipynb`
+- Notebook: `notebooks/multi_page_rag_notebook.ipynb`
 - LLD: `LLD.md` (this file)
 - README: `README.md` (this file)
 - Tests: `tests/` (including endpoint tests)
