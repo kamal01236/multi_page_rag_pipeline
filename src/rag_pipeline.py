@@ -88,7 +88,7 @@ def randomized_chunks(text: str, min_size=MIN_CHUNK, max_size=MAX_CHUNK, overlap
 
 
 # ------------------ Vector Store ------------------
-def build_vectorstore(docs: List[Any]):
+def build_vectorstore(docs: List[Any], backend: str = "auto"):
     """
     Try building vectorstore in this order:
     1. Ollama embeddings (if FORCE_OLLAMA=1)
@@ -99,39 +99,47 @@ def build_vectorstore(docs: List[Any]):
     if not HAS_LANGCHAIN:
         raise RuntimeError("LangChain not installed.")
 
-    force_ollama = os.getenv("FORCE_OLLAMA", "0").strip() == "1"
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     ollama_token = os.getenv("OLLAMA_TOKEN")
 
-    # --- Try Ollama embeddings first if forced ---
-    if force_ollama:
+    # Helper: try to build for a single backend name
+    def try_backend(name: str):
         try:
-            logger.info("🚀 FORCE_OLLAMA=1 — using Ollama embeddings (mistral:instruct).")
-            headers = {"Authorization": f"Bearer {ollama_token}"} if ollama_token else None
-            emb = OllamaEmbeddings(base_url=ollama_url, model="mistral:instruct", headers=headers)
-            store = FAISS.from_documents(docs, emb)
-            return store, "faiss-ollama"
+            if name == "ollama":
+                logger.info("Trying Ollama embeddings.")
+                headers = {"Authorization": f"Bearer {ollama_token}"} if ollama_token else None
+                emb = OllamaEmbeddings(base_url=ollama_url, model="mistral:instruct", headers=headers)
+                store = FAISS.from_documents(docs, emb)
+                return store, "faiss-ollama"
+            if name == "openai":
+                if not os.getenv("OPENAI_API_KEY"):
+                    raise RuntimeError("OPENAI_API_KEY not set")
+                logger.info("Using OpenAI embeddings via FAISS.")
+                emb = OpenAIEmbeddings(model="text-embedding-3-small")
+                store = FAISS.from_documents(docs, emb)
+                return store, "faiss-openai"
+            if name == "huggingface":
+                logger.info("Using HuggingFace sentence-transformers.")
+                emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+                store = FAISS.from_documents(docs, emb)
+                return store, "faiss-hf"
         except Exception as e:
-            logger.warning(f"⚠️ Ollama embeddings failed: {e}")
+            logger.warning("Backend %s failed: %s", name, e)
+        return None
 
-    # --- Try OpenAI embeddings ---
-    try:
-        if os.getenv("OPENAI_API_KEY") and not force_ollama:
-            logger.info("✅ Using OpenAI embeddings via FAISS.")
-            emb = OpenAIEmbeddings(model="text-embedding-3-small")
-            store = FAISS.from_documents(docs, emb)
-            return store, "faiss-openai"
-    except Exception as e:
-        logger.warning(f"⚠️ OpenAI embeddings failed: {e}")
+    # Selection order
+    if backend and backend != "auto":
+        res = try_backend(backend)
+        if res:
+            return res
+        # If explicit backend failed, raise to surface the issue
+        raise RuntimeError(f"Requested backend '{backend}' is not available or failed to build")
 
-    # --- HuggingFace fallback ---
-    try:
-        logger.info("⚙️ Using HuggingFace sentence-transformers fallback.")
-        emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        store = FAISS.from_documents(docs, emb)
-        return store, "faiss-hf"
-    except Exception as e:
-        logger.warning(f"⚠️ HuggingFace embeddings failed: {e}")
+    # Auto selection: prefer OpenAI, then Ollama, then HF, then TF-IDF
+    for candidate in ["openai", "ollama", "huggingface"]:
+        res = try_backend(candidate)
+        if res:
+            return res
 
     # --- TF-IDF fallback ---
     if HAS_SKLEARN:
@@ -159,16 +167,17 @@ def build_vectorstore(docs: List[Any]):
 
 # ------------------ Backend Detector ------------------
 def detect_backend() -> str:
-    if os.getenv("FORCE_OLLAMA", "0") == "1":
-        return "ollama"
+    # Prefer explicit environment-based backends
     if os.getenv("OPENAI_API_KEY"):
         return "openai"
+    # Check for local Ollama service
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=2)
+        r = requests.get("http://localhost:11434/api/tags", timeout=1)
         if r.ok:
             return "ollama"
     except Exception:
         pass
+    # If LangChain is present assume huggingface is available
     if HAS_LANGCHAIN:
         return "huggingface"
     if HAS_SKLEARN:
@@ -181,7 +190,7 @@ import time, tiktoken
 from collections import deque
 
 # ------------------ RetrievalQA ------------------
-def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama_token=None):
+def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama_token=None, backend: str = "auto"):
     """
     Build a RetrievalQA chain with quota-safe OpenAI backend:
     - Respects 3 RPM (requests/min) and 10,000 TPM (tokens/min) limits
@@ -204,7 +213,7 @@ def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama
     )
 
     retriever = getattr(vector_store, "as_retriever", lambda **_: vector_store)(search_kwargs={"k": 4})
-    llm, backend = None, None
+    llm, chosen_backend = None, None
 
     # --- Rate limiter state ---
     request_timestamps = deque()
@@ -248,61 +257,60 @@ def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama
         request_timestamps.append(now)
         token_timestamps.append((now, token_estimate))
 
-    # --- Backend setup ---
-    force_ollama = os.getenv("FORCE_OLLAMA", "0").strip() == "1"
-    ollama_token = os.getenv("OLLAMA_TOKEN")
-    logger.info(f"FORCE_OLLAMA={force_ollama}")
-
-    if force_ollama:
-        logger.info("🚀 FORCE_OLLAMA=1 — using local Ollama backend.")
-        headers = {"Authorization": f"Bearer {ollama_token}"} if ollama_token else None
-        llm = OllamaLLM(base_url=ollama_url, model="mistral:instruct", headers=headers)
-        backend = "ollama"
-    else:
-        if os.getenv("OPENAI_API_KEY"):
-            try:
-                logger.info("🔷 Trying OpenAI backend (with quota limiter)...")
-
-                # Wrap the LangChain OpenAI LLM to include rate limiting + retry logic
-                from langchain_openai import OpenAI as LCOpenAI
-                from openai import RateLimitError
-
-                class QuotaSafeOpenAI(LCOpenAI):
-                    def invoke(self, prompt_text, *args, **kwargs):
-                        quota_sleep(prompt_text)
-                        for attempt in range(5):
-                            try:
-                                return super().invoke(prompt_text, *args, **kwargs)
-                            except RateLimitError:
-                                wait = 2 ** attempt + random.uniform(0, 1)
-                                logger.warning(f"⚠️ Rate limit — retrying in {wait:.1f}s...")
-                                time.sleep(wait)
-                            except Exception as e:
-                                if "429" in str(e):
-                                    wait = 2 ** attempt + random.uniform(0, 1)
-                                    logger.warning(f"⚠️ 429 error — retrying in {wait:.1f}s...")
-                                    time.sleep(wait)
-                                else:
-                                    raise
-                        raise RuntimeError("❌ Too many retries due to rate limits")
-
-                llm = QuotaSafeOpenAI(temperature=0)
-                _ = llm.invoke("ping")  # sanity check
-                backend = "openai"
-            except Exception as e:
-                logger.warning(f"⚠️ OpenAI failed ({type(e).__name__}): {e}")
-                llm = None
-
-        if llm is None:
-            try:
-                logger.info("🟢 Trying local Ollama backend...")
-                r = requests.get(f"{ollama_url}/api/tags", timeout=2)
-                if r.ok:
+    # Choose backend deterministically when requested; otherwise try an ordered list
+    def try_init(name: str):
+        nonlocal llm, chosen_backend
+        try:
+            if name == "openai":
+                if not os.getenv("OPENAI_API_KEY"):
+                    raise RuntimeError("OPENAI_API_KEY not set")
+                logger.info("Trying OpenAI LLM...")
+                cand = OpenAI(temperature=0)
+                # quick sanity call if supported
+                try:
+                    if hasattr(cand, "invoke"):
+                        cand.invoke("ping")
+                except Exception:
+                    pass
+                llm = cand
+                chosen_backend = "openai"
+                return True
+            if name == "ollama":
+                try:
                     headers = {"Authorization": f"Bearer {ollama_token}"} if ollama_token else None
-                    llm = OllamaLLM(base_url=ollama_url, model="mistral:instruct", headers=headers)
-                    backend = "ollama"
-            except Exception as e:
-                logger.warning(f"⚠️ Ollama not reachable: {e}")
+                    cand = OllamaLLM(base_url=ollama_url, model="mistral:instruct", headers=headers)
+                    llm = cand
+                    chosen_backend = "ollama"
+                    logger.info("Using Ollama LLM.")
+                    return True
+                except Exception as e:
+                    logger.warning("Ollama init failed: %s", e)
+                    return False
+            if name == "huggingface":
+                try:
+                    from langchain_community.llms import HuggingFaceHub
+                    token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+                    # allow local HuggingFaceHub if token present
+                    cand = HuggingFaceHub(repo_id="tiiuae/falcon-7b-instruct", model_kwargs={"temperature": 0})
+                    llm = cand
+                    chosen_backend = "huggingface"
+                    logger.info("Using HuggingFaceHub LLM.")
+                    return True
+                except Exception as e:
+                    logger.warning("HuggingFace init failed: %s", e)
+                    return False
+        except Exception as e:
+            logger.warning("LLM init error for %s: %s", name, e)
+        return False
+
+    if backend and backend != "auto":
+        ok = try_init(backend)
+        if not ok:
+            raise RuntimeError(f"Requested LLM backend '{backend}' failed to initialize")
+    else:
+        for cand in ["openai", "ollama", "huggingface"]:
+            if try_init(cand):
+                break
 
         if llm is None:
             try:
@@ -324,9 +332,9 @@ def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama
                 logger.warning(f"⚠️ HuggingFace fallback failed: {e}")
 
     if llm is None:
-        raise RuntimeError("❌ No valid LLM backend available (OpenAI, Ollama, or HF).")
+        raise RuntimeError("No valid LLM backend available (OpenAI, Ollama, or HF).")
 
-    logger.info(f"✅ Final LLM backend: {backend}")
+    logger.info("Final LLM backend: %s", chosen_backend)
 
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
@@ -336,7 +344,7 @@ def build_retrieval_qa(vector_store, ollama_url="http://localhost:11434", ollama
         chain_type_kwargs={"prompt": prompt_template},
     )
 
-    return qa_chain, backend, llm
+    return qa_chain, chosen_backend, llm
 
 
 # ------------------ Page-specific askers ------------------

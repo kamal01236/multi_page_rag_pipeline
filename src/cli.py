@@ -37,20 +37,22 @@ def build_from_urls(urls, seed=None):
             meta = {'source': url, 'title': title, 'chunk_index': i}
             docs.append(Document(page_content=c, metadata=meta))
         logger.info("Created %d chunks for %s", len(chunks), title)
+    # No explicit backend chosen here; caller may request a backend via demo_pipeline/main
     store, stype = build_vectorstore(docs)
     logger.info("Built vector store: %s", stype)
     logger.info("Detected backend (helper): %s", detect_backend())
     return docs, store
 
 
-def demo_pipeline(urls=None, seed=42, ollama_url=None, ollama_token=None):
+def demo_pipeline(urls=None, seed=42, ollama_url=None, ollama_token=None, backend: str = "auto"):
     if urls is None:
         urls = [
             "https://en.wikipedia.org/wiki/Quantum_computing",
             "https://en.wikipedia.org/wiki/Quantum_machine_learning",
         ]
     docs, store = build_from_urls(urls, seed=seed)
-    qa, qatype, llm = build_retrieval_qa(store, ollama_url=ollama_url, ollama_token=ollama_token)
+    # Allow consumers to request a specific backend (openai/ollama/huggingface/tfidf/auto)
+    qa, qatype, llm = build_retrieval_qa(store, ollama_url=ollama_url, ollama_token=ollama_token, backend=backend)
     # Pass the triple so askers can access the underlying llm for page-specific synthesis
     askers = make_page_specific_askers(store, (qa, qatype, llm), urls)
     return {
@@ -69,10 +71,11 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--ollama-url', type=str, default='http://localhost:11434', help='Ollama base URL')
     parser.add_argument('--ollama-token', type=str, default=None, help='Ollama API token (if required)')
+    parser.add_argument('--backend', type=str, default='auto', choices=['auto','openai','ollama','huggingface','tfidf'], help='Select embedding/LLM backend')
     args = parser.parse_args()
 
     docs, store = build_from_urls(args.urls, seed=args.seed)
-    qa, qatype, llm = build_retrieval_qa(store, ollama_url=args.ollama_url, ollama_token=args.ollama_token)
+    qa, qatype, llm = build_retrieval_qa(store, ollama_url=args.ollama_url, ollama_token=args.ollama_token, backend=args.backend)
 
     print("QA type:", qatype)
 
