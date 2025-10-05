@@ -80,7 +80,8 @@ def ingest(req: IngestRequest):
 
         # ------------------- Build Page-Specific Askers -------------------
         try:
-            askers = make_page_specific_askers(store, STATE["qa_callable"])
+            # make_page_specific_askers expects the vector_store and a list of canonical URLs
+            askers = make_page_specific_askers(store, req.urls)
             STATE["askers"] = askers
         except Exception as e:
             logger.warning("⚠️ Could not create page-specific askers: %s", e)
